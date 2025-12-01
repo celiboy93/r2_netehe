@@ -2,90 +2,114 @@ import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { S3Client, GetObjectCommand, HeadObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
-// 🔥 LINK သက်တမ်း (စက္ကန့်) - လက်ရှိ: ၁၂ နာရီ
+// 🔥 LINK သက်တမ်း (စက္ကန့်) - ၁၂ နာရီ
 const LINK_DURATION = 10800;
 
 const app = new Application();
 const router = new Router();
 
-// အကောင့်နံပါတ်အလိုက် Credential ထုတ်ပေးမည့် Function
-function getR2Client(acc: string) {
-  const suffix = acc === "1" ? "" : `_${acc}`;
+// CORS ဖြေရှင်းခြင်း (APK များအတွက် အရေးကြီးသည်)
+app.use(async (ctx, next) => {
+  ctx.response.headers.set("Access-Control-Allow-Origin", "*");
+  ctx.response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  ctx.response.headers.set("Access-Control-Allow-Headers", "Content-Type, Content-Length");
 
-  const accountId = Deno.env.get(`R2_ACCOUNT_ID${suffix}`);
-  const accessKeyId = Deno.env.get(`R2_ACCESS_KEY_ID${suffix}`);
-  const secretAccessKey = Deno.env.get(`R2_SECRET_ACCESS_KEY${suffix}`);
-
-  if (!accountId || !accessKeyId || !secretAccessKey) {
-    return null; // Key မရှိရင် null ပြန်မယ်
-  }
-
-  return new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId, secretAccessKey },
-  });
-}
-
-router.get("/", async (ctx) => {
-  const video = ctx.request.url.searchParams.get("video");
-  const acc = ctx.request.url.searchParams.get("acc") || "1";
-
-  if (!video) {
-    ctx.response.status = 400;
-    ctx.response.body = "Video parameter is missing!";
+  if (ctx.request.method === "OPTIONS") {
+    ctx.response.status = 200;
     return;
   }
+  await next();
+});
 
+router.get("/", handleRequest);
+router.head("/", handleRequest); // HEAD Request ကိုပါ လက်ခံမည်
+
+async function handleRequest(ctx: any) {
   try {
-    const r2 = getR2Client(acc);
-    if (!r2) {
-      ctx.response.status = 500;
-      ctx.response.body = `Error: Keys for Account ${acc} not found!`;
+    // ၁။ URL မှ video နှင့် acc နံပါတ်ကို ယူမည်
+    const video = ctx.request.url.searchParams.get("video");
+    const acc = ctx.request.url.searchParams.get("acc") || "1";
+
+    if (!video) {
+      ctx.response.status = 400;
+      ctx.response.body = "Missing video parameter";
       return;
     }
 
-    // 🔥 APK များအတွက် HEAD Request (File Size စစ်ခြင်း) ကို လက်ခံဖြေကြားပေးခြင်း
+    // ၂။ Account ခွဲထုတ်ခြင်း Logic
+    const suffix = acc === "1" ? "" : `_${acc}`;
+
+    const accountId = Deno.env.get(`R2_ACCOUNT_ID${suffix}`) || Deno.env.get("R2_ACCOUNT_ID");
+    const accessKeyId = Deno.env.get(`R2_ACCESS_KEY_ID${suffix}`) || Deno.env.get("R2_ACCESS_KEY_ID");
+    const secretAccessKey = Deno.env.get(`R2_SECRET_ACCESS_KEY${suffix}`) || Deno.env.get("R2_SECRET_ACCESS_KEY");
+
+    // Bucket နာမည်တူတူပဲဆိုရင် တစ်နေရာတည်းက ယူမယ် (သို့) အကောင့်အလိုက်ခွဲချင်ရင်လည်းရ
+    const bucketName = Deno.env.get(`R2_BUCKET_NAME${suffix}`) || Deno.env.get("R2_BUCKET_NAME");
+
+    if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
+      console.error(`Missing env vars for acc=${acc}`);
+      ctx.response.status = 500;
+      ctx.response.body = "Server Configuration Error (Env Vars)";
+      return;
+    }
+// ၃။ R2 Client တည်ဆောက်ခြင်း
+    const r2 = new S3Client({
+      region: "auto",
+      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId, secretAccessKey },
+    });
+
+    // ဖိုင်နာမည်ကို သန့်ရှင်းရေးလုပ်ခြင်း (Optional)
+    // ဥပမာ movies/batman.mp4 လာရင် movies/batman.mp4 အတိုင်းထားမယ်
+    const objectKey = video;
+
+    // ၄။ APK က Size လာမေးရင် (HEAD Request)
     if (ctx.request.method === "HEAD") {
       try {
+        // R2 ကို ဖိုင်ရှိမရှိနှင့် Size လှမ်းမေး
         const headCommand = new HeadObjectCommand({
-          Bucket: Deno.env.get("BUCKET_NAME") || "YOUR_BUCKET_NAME",
-          Key: video,
+          Bucket: bucketName,
+          Key: objectKey,
         });
         const headData = await r2.send(headCommand);
 
+        // APK ကို Size ပြန်ဖြေ (Redirect မလုပ်ပါ)
         ctx.response.status = 200;
-        ctx.response.headers.set("Content-Type", headData.ContentType || "video/mp4");
-        ctx.response.headers.set("Content-Length", String(headData.ContentLength));
-        ctx.response.headers.set("Accept-Ranges", "bytes");
+        if (headData.ContentLength) {
+            ctx.response.headers.set("Content-Length", headData.ContentLength.toString());
+        }
+        if (headData.ContentType) {
+            ctx.response.headers.set("Content-Type", headData.ContentType);
+        }
+        ctx.response.headers.set("Accept-Ranges", "bytes"); // Resume download ရအောင်
         return;
+
       } catch (error) {
-        console.log("HEAD Error:", error);
-        // HEAD မအောင်မြင်ရင်လည်း အောက်က GET ကို ဆက်သွားခွင့်ပြုမယ် (Fail safe)
+        console.error("HEAD Error:", error);
+        ctx.response.status = 404; // ဖိုင်မရှိရင် 404 ပြ
+        return;
       }
     }
 
-    // 🔥 Download Link ထုတ်ပေးခြင်း
+    // ၅။ ဒေါင်းလုပ်ဆွဲရင် (GET Request) -> Link ထုတ်ပေးပြီး Redirect လုပ်
     const command = new GetObjectCommand({
-      Bucket: Deno.env.get("BUCKET_NAME") || "YOUR_BUCKET_NAME",
-      Key: video,
+      Bucket: bucketName,
+      Key: objectKey,
+      ResponseContentDisposition: `attachment; filename="${video.split('/').pop()}"`, // Force Download
     });
 
     const signedUrl = await getSignedUrl(r2, command, { expiresIn: LINK_DURATION });
 
-    // ✅ CACHING ထည့်သွင်းခြင်း
-    // Browser/APK ကို "ဒီ Link က ၁ နာရီ (3600 စက္ကန့်) အတွင်း ဘာမှမပြောင်းဘူး၊ မှတ်ထားလိုက်" လို့ ပြောခြင်း
-    ctx.response.headers.set("Cache-Control", "public, max-age=3600");
-
+    // APK ကို Link ပေးလိုက်ပါ (302 Redirect)
     ctx.response.status = 302;
     ctx.response.headers.set("Location", signedUrl);
 
-  } catch (error) {
-    console.error("Error generating signed URL:", error);
+  } catch (err) {
+    console.error("Main Error:", err);
     ctx.response.status = 500;
-    ctx.response.body = "Internal Server Error: " + error.message;
+    ctx.response.body = "Internal Server Error";
   }
-});
+}
 
 app.use(router.routes());
 app.use(router.allowedMethods());
