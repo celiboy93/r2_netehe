@@ -3,7 +3,7 @@ import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
-// ၁။ Cloudflare R2 Setup (ဒါက အတူတူပါပဲ)
+// R2 Setup
 const r2 = new S3Client({
   region: "auto",
   endpoint: `https://${Deno.env.get("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`,
@@ -13,40 +13,37 @@ const r2 = new S3Client({
   },
 });
 
-// ၂။ Oak Application နှင့် Router ဖန်တီးခြင်း
 const app = new Application();
 const router = new Router();
 
-router.get("/", async (ctx) => {
-  // URL ကနေ video name ကို ဆွဲထုတ်မယ်
-  const videoName = ctx.request.url.searchParams.get("video");
+// အစမ်းကြည့်ရန် Home Page
+router.get("/", (ctx) => {
+  ctx.response.body = "Hello! Video Server is Running with Oak!";
+});
 
-  if (!videoName) {
-    ctx.response.status = 400;
-    ctx.response.body = "Error: ?video=filename.mp4 ထည့်ပေးရန် လိုအပ်ပါသည်။";
-    return;
-  }
+// Video လမ်းကြောင်းသတ်မှတ်ခြင်း
+router.get("/watch/:filename", async (ctx) => {
+  const filename = ctx.params.filename;
 
   try {
     const command = new GetObjectCommand({
-      Bucket: "lugyicar", // ဒီနေရာမှာ ကိုယ့် Bucket နာမည် အမှန်ထည့်ပါ
-      Key: videoName,
+      Bucket: "lugyicar", // ဒီနေရာမှာ R2 Bucket နာမည်အမှန် ထည့်ပေးပါ
+      Key: filename,
     });
 
-    // ၃ နာရီ (10800 seconds) ခံမယ့် Link ထုတ်မယ်
+    // ၃ နာရီ (10800 seconds) ခံမယ့် Link ထုတ်ခြင်း
     const signedUrl = await getSignedUrl(r2, command, { expiresIn: 10800 });
 
-    // Oak ရဲ့ အားသာချက် - ဒီနေရာမှာ User ကို Video ဆီ တန်းပို့လိုက်မယ် (Redirect)
+    // Video ရှိရာသို့ Redirect လုပ်ခြင်း
     ctx.response.redirect(signedUrl);
 
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error(error);
     ctx.response.status = 500;
-    ctx.response.body = "Internal Server Error";
+    ctx.response.body = "Error generating link";
   }
 });
 
-// ၃။ App ကို Run ခြင်း
 app.use(router.routes());
 app.use(router.allowedMethods());
 
