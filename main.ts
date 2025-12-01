@@ -3,7 +3,7 @@ import { S3Client, GetObjectCommand, HeadObjectCommand } from "npm:@aws-sdk/clie
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
 // 🔥 LINK သက်တမ်း (စက္ကန့်) - လက်ရှိ: ၁၂ နာရီ
-const LINK_DURATION = 43200;
+const LINK_DURATION = 10800;
 
 const app = new Application();
 const router = new Router();
