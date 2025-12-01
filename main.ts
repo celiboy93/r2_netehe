@@ -3,6 +3,7 @@ import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
+// R2 Setup (ကိုယ့် Key တွေသေချာထည့်ပါ)
 const r2 = new S3Client({
   region: "auto",
   endpoint: `https://${Deno.env.get("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`,
@@ -15,45 +16,45 @@ const r2 = new S3Client({
 const app = new Application();
 const router = new Router();
 
-router.get("/watch/:video", async (ctx) => {
-  try {
-    const videoName = ctx.params.video; // .mp4 မပါလည်း ရပါတယ်
-    // User က .mp4 ထည့်မခေါ်ရင် ကိုယ်က ဖြည့်ပေးမယ်
-    const finalName = videoName.endsWith(".mp4") ? videoName : `${videoName}.mp4`;
+router.get("/watch/:filename", async (ctx) => {
+  const filename = ctx.params.filename;
 
-    // ၃ နာရီခံတဲ့ Link တောင်းမယ်
+  // ၁။ .m3u8 နဲ့လာရင် ဖယ်ထုတ်ပြီး .mp4 ပြောင်းမယ် (R2 မှာရှာဖို့)
+  // ဥပမာ: movie.m3u8 လာရင် movie.mp4 ဖြစ်သွားမယ်
+  const realVideoName = filename.replace(".m3u8", ".mp4"); // .mp4 မဟုတ်ရင် ဒီနေရာမှာ ကိုယ့်ဖိုင် type ကိုပြင်ပါ
+
+  try {
     const command = new GetObjectCommand({
-      Bucket: "lugyicar", // Bucket နာမည် အမှန်ထည့်ပါ
-      Key: finalName,
+      Bucket: "lugyicar", // ကိုယ့် Bucket နာမည်အမှန် ဒီမှာထည့်ပါ
+      Key: realVideoName,
     });
 
+    // ၂။ ၃ နာရီခံတဲ့ Link ထုတ်မယ်
     const signedUrl = await getSignedUrl(r2, command, { expiresIn: 10800 });
 
-    // M3U8 ဖိုင်အဖြစ် ဖန်တီးခြင်း
-    // Player ကို "ဒါ M3U8 ပါ၊ အထဲမှာ ဗီဒီယိုရှိပါတယ်" လို့ ပြောမယ့်ကုဒ်
-    const m3u8Content = `#EXTM3U
+    // ၃။ M3U8 Playlist ဖန်တီးပေးမယ်
+    // ဒီနည်းက Redirect မလုပ်ဘဲ စာသားဖိုင်ပဲ ပို့ပေးတာပါ
+    ctx.response.status = 200;
+    ctx.response.headers.set("Content-Type", "application/vnd.apple.mpegurl");
+    ctx.response.headers.set("Cache-Control", "no-cache");
+
+    // M3U8 Content
+    ctx.response.body = `#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:10800
-#EXT-X-MEDIA-SEQUENCE:0
-#EXT-X-PLAYLIST-TYPE:VOD
-#EXTINF:10800.0,
+#EXTINF:-1,Video
 ${signedUrl}
 #EXT-X-ENDLIST`;
-
-    // Headers သတ်မှတ်ခြင်း (အရေးကြီးပါတယ်)
-    ctx.response.headers.set("Content-Type", "application/vnd.apple.mpegurl");
-    ctx.response.headers.set("Content-Disposition", `inline; filename="${videoName}.m3u8"`);
-
-    ctx.response.body = m3u8Content;
 
   } catch (error) {
     console.error(error);
     ctx.response.status = 404;
-    ctx.response.body = "Video not found or Error generating link.";
+    ctx.response.body = "Video Not Found on R2";
   }
 });
 
 app.use(router.routes());
 app.use(router.allowedMethods());
 
+console.log("Server running...");
 await app.listen({ port: 8000 });
