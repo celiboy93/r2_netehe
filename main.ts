@@ -1,8 +1,9 @@
 // main.ts
+import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
-// ၁။ Cloudflare R2 နှင့် ချိတ်ဆက်ခြင်း (Setup)
+// ၁။ Cloudflare R2 Setup (ဒါက အတူတူပါပဲ)
 const r2 = new S3Client({
   region: "auto",
   endpoint: `https://${Deno.env.get("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`,
@@ -12,31 +13,41 @@ const r2 = new S3Client({
   },
 });
 
-Deno.serve(async (req: Request) => {
-  // ၂။ URL ထဲမှ video parameter ကို ရှာခြင်း
-  const url = new URL(req.url);
-  const videoName = url.searchParams.get("video");
+// ၂။ Oak Application နှင့် Router ဖန်တီးခြင်း
+const app = new Application();
+const router = new Router();
 
-  // ဗီဒီယိုနာမည် မပါလာရင် Error ပြမယ်
+router.get("/", async (ctx) => {
+  // URL ကနေ video name ကို ဆွဲထုတ်မယ်
+  const videoName = ctx.request.url.searchParams.get("video");
+
   if (!videoName) {
-    return new Response("အသုံးပြုပုံ - /?video=filename.mp4 ဟု ရိုက်ထည့်ပေးပါ", { status: 400 });
+    ctx.response.status = 400;
+    ctx.response.body = "Error: ?video=filename.mp4 ထည့်ပေးရန် လိုအပ်ပါသည်။";
+    return;
   }
 
   try {
-    // ၃။ R2 ပေါ်မှ ဖိုင်ကို လှမ်းယူရန် အမိန့် (Command) တည်ဆောက်ခြင်း
     const command = new GetObjectCommand({
-      Bucket: Deno.env.get("R2_BUCKET_NAME"), // Environment Variable ထဲတွင် Bucket နာမည်ထည့်ထားရပါမယ်
+      Bucket: "my-bucket-name", // ဒီနေရာမှာ ကိုယ့် Bucket နာမည် အမှန်ထည့်ပါ
       Key: videoName,
     });
 
-    // ၄။ ၃ နာရီ (၁၀၈၀၀ စက္ကန့်) ခံမယ့် Link ကို ထုတ်ယူခြင်း
+    // ၃ နာရီ (10800 seconds) ခံမယ့် Link ထုတ်မယ်
     const signedUrl = await getSignedUrl(r2, command, { expiresIn: 10800 });
 
-    // ၅။ အသုံးပြုသူကို ထို Link သို့ လမ်းကြောင်းလွှဲပေးခြင်း (Redirect)
-    return Response.redirect(signedUrl);
+    // Oak ရဲ့ အားသာချက် - ဒီနေရာမှာ User ကို Video ဆီ တန်းပို့လိုက်မယ် (Redirect)
+    ctx.response.redirect(signedUrl);
 
-  } catch (error) {
-    // တခုခုမှားယွင်းခဲ့လျှင်
-    return new Response(`Error: ${error.message}`, { status: 500 });
+  } catch (err) {
+    console.error(err);
+    ctx.response.status = 500;
+    ctx.response.body = "Internal Server Error";
   }
 });
+
+// ၃။ App ကို Run ခြင်း
+app.use(router.routes());
+app.use(router.allowedMethods());
+
+await app.listen({ port: 8000 });
