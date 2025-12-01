@@ -1,9 +1,9 @@
-// main.ts
+// main.ts (Using 307 Redirect - No Bandwidth)
 import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { S3Client, GetObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
-// R2 Setup (ကိုယ့် Key တွေသေချာထည့်ပါ)
+// R2 Setup
 const r2 = new S3Client({
   region: "auto",
   endpoint: `https://${Deno.env.get("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`,
@@ -13,48 +13,40 @@ const r2 = new S3Client({
   },
 });
 
-const app = new Application();
 const router = new Router();
 
-router.get("/watch/:filename", async (ctx) => {
-  const filename = ctx.params.filename;
-
-  // ၁။ .m3u8 နဲ့လာရင် ဖယ်ထုတ်ပြီး .mp4 ပြောင်းမယ် (R2 မှာရှာဖို့)
-  // ဥပမာ: movie.m3u8 လာရင် movie.mp4 ဖြစ်သွားမယ်
-  const realVideoName = filename.replace(".m3u8", ".mp4"); // .mp4 မဟုတ်ရင် ဒီနေရာမှာ ကိုယ့်ဖိုင် type ကိုပြင်ပါ
-
+// ဒီနေရာမှာ လမ်းကြောင်းသတ်မှတ်ပါတယ်
+// ဥပမာ: https://project.deno.dev/watch/batman
+router.get("/watch/:videoName", async (ctx) => {
   try {
+    let videoName = ctx.params.videoName;
+
+    // .mp4 မပါရင် ထည့်ပေးမယ်
+    if (!videoName.endsWith(".mp4")) {
+      videoName += ".mp4";
+    }
+
     const command = new GetObjectCommand({
-      Bucket: "lugyicar", // ကိုယ့် Bucket နာမည်အမှန် ဒီမှာထည့်ပါ
-      Key: realVideoName,
+      Bucket: "lugyicar", // ပုံးနာမည် အမှန်ထည့်ပါ
+      Key: videoName,
     });
 
-    // ၂။ ၃ နာရီခံတဲ့ Link ထုတ်မယ်
+    // ၃ နာရီ (10800 seconds) ခံမယ့် Link တောင်းမယ်
     const signedUrl = await getSignedUrl(r2, command, { expiresIn: 10800 });
 
-    // ၃။ M3U8 Playlist ဖန်တီးပေးမယ်
-    // ဒီနည်းက Redirect မလုပ်ဘဲ စာသားဖိုင်ပဲ ပို့ပေးတာပါ
-    ctx.response.status = 200;
-    ctx.response.headers.set("Content-Type", "application/vnd.apple.mpegurl");
-    ctx.response.headers.set("Cache-Control", "no-cache");
+    // Redirect လုပ်ရာမှာ 307 ကုဒ်ကို သုံးပါမယ်
+    ctx.response.status = 307;
+    ctx.response.redirect(signedUrl);
 
-    // M3U8 Content
-    ctx.response.body = `#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:10800
-#EXTINF:-1,Video
-${signedUrl}
-#EXT-X-ENDLIST`;
-
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error(err);
     ctx.response.status = 404;
-    ctx.response.body = "Video Not Found on R2";
+    ctx.response.body = "Video not found or Error generating link";
   }
 });
 
+const app = new Application();
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-console.log("Server running...");
 await app.listen({ port: 8000 });
