@@ -2,81 +2,116 @@ import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { S3Client, GetObjectCommand, HeadObjectCommand } from "npm:@aws-sdk/client-s3";
 import { getSignedUrl } from "npm:@aws-sdk/s3-request-presigner";
 
+// 🔥 LINK သက်တမ်း (စက္ကန့်) - ၁၂ နာရီ
+const LINK_DURATION = 10800;
+
 const app = new Application();
 const router = new Router();
 
-// အကောင့်နံပါတ်အလိုက် Credential ထုတ်ပေးမည့် Function
-function getR2Client(acc: string) {
-  // ဥပမာ: acc=2 ဆိုရင် R2_ACCOUNT_ID_2 ကို ရှာမယ်။ မရှိရင် အလွတ် (Original) ကို ရှာမယ်။
-  const suffix = acc === "1" ? "" : `_${acc}`;
+// CORS ဖြေရှင်းခြင်း (APK များအတွက် အရေးကြီးသည်)
+app.use(async (ctx, next) => {
+  ctx.response.headers.set("Access-Control-Allow-Origin", "*");
+  ctx.response.headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  ctx.response.headers.set("Access-Control-Allow-Headers", "Content-Type, Content-Length");
 
-  // Key များ ရှာဖွေခြင်း (Specific -> Fallback to Default)
-  const accountId = Deno.env.get(`R2_ACCOUNT_ID${suffix}`) || Deno.env.get("R2_ACCOUNT_ID");
-  const accessKeyId = Deno.env.get(`R2_ACCESS_KEY_ID${suffix}`) || Deno.env.get("R2_ACCESS_KEY_ID");
-  const secretAccessKey = Deno.env.get(`R2_SECRET_ACCESS_KEY${suffix}`) || Deno.env.get("R2_SECRET_ACCESS_KEY");
-  const bucketName = Deno.env.get(`R2_BUCKET_NAME${suffix}`) || Deno.env.get("R2_BUCKET_NAME") || "default-bucket";
-
-  if (!accountId || !accessKeyId || !secretAccessKey) {
-    throw new Error(`Account ${acc} အတွက် Setting များ မပြည့်စုံပါ`);
+  if (ctx.request.method === "OPTIONS") {
+    ctx.response.status = 200;
+    return;
   }
+  await next();
+});
 
-  const client = new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId, secretAccessKey },
-  });
+router.get("/", handleRequest);
+router.head("/", handleRequest); // HEAD Request ကိုပါ လက်ခံမည်
 
-  return { client, bucketName };
-}
-
-router.get("/", async (ctx) => {
+async function handleRequest(ctx: any) {
   try {
+    // ၁။ URL မှ video နှင့် acc နံပါတ်ကို ယူမည်
     const video = ctx.request.url.searchParams.get("video");
-    const acc = ctx.request.url.searchParams.get("acc") || "1"; // acc မပါရင် 1 ဟုယူမယ်
+    const acc = ctx.request.url.searchParams.get("acc") || "1";
 
     if (!video) {
       ctx.response.status = 400;
-      ctx.response.body = "Video parameter is missing!";
+      ctx.response.body = "Missing video parameter";
       return;
     }
 
-    // ၁။ သက်ဆိုင်ရာ အကောင့် Client ကို ဖန်တီးခြင်း
-    const { client, bucketName } = getR2Client(acc);
+    // ၂။ Account ခွဲထုတ်ခြင်း Logic
+    const suffix = acc === "1" ? "" : `_${acc}`;
 
-    // ၂။ ဖိုင်နာမည်သန့်သန့်ရအောင် ယူခြင်း (ဥပမာ: movies/batman.mp4 -> batman.mp4)
-    const cleanFileName = video.split("/").pop();
+    const accountId = Deno.env.get(`R2_ACCOUNT_ID${suffix}`) || Deno.env.get("R2_ACCOUNT_ID");
+    const accessKeyId = Deno.env.get(`R2_ACCESS_KEY_ID${suffix}`) || Deno.env.get("R2_ACCESS_KEY_ID");
+    const secretAccessKey = Deno.env.get(`R2_SECRET_ACCESS_KEY${suffix}`) || Deno.env.get("R2_SECRET_ACCESS_KEY");
 
-    // ၃။ APK က File Size လှမ်းမေးရင် (HEAD Request) ဖြေပေးခြင်း
-    // (Deno Oak မှာ GET method ထဲကနေ HEAD ကိုပါ auto handle လုပ်ပေးတတ်ပါတယ်၊
-    // ဒါပေမယ့် သေချာအောင် ဒီလို စစ်ပေးတာ ပိုကောင်းပါတယ်)
+    // Bucket နာမည်တူတူပဲဆိုရင် တစ်နေရာတည်းက ယူမယ် (သို့) အကောင့်အလိုက်ခွဲချင်ရင်လည်းရ
+    const bucketName = Deno.env.get(`R2_BUCKET_NAME${suffix}`) || Deno.env.get("R2_BUCKET_NAME");
 
-    // Note: APK တချို့က HEAD နဲ့ မမေးဘဲ GET နဲ့ပဲ မေးပြီး Header စောင့်တာရှိလို့
-    // Download အတွက် Presigned URL ထုတ်ပေးခြင်းကိုပဲ ဦးစားပေးလုပ်ပါမယ်။
+    if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
+      console.error(`Missing env vars for acc=${acc}`);
+      ctx.response.status = 500;
+      ctx.response.body = "Server Configuration Error (Env Vars)";
+      return;
+    }
+    // ၃။ R2 Client တည်ဆောက်ခြင်း
+    const r2 = new S3Client({
+      region: "auto",
+      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId, secretAccessKey },
+    });
 
+    // ဖိုင်နာမည်ကို သန့်ရှင်းရေးလုပ်ခြင်း (Optional)
+    // ဥပမာ movies/batman.mp4 လာရင် movies/batman.mp4 အတိုင်းထားမယ်
+    const objectKey = video;
+
+    // ၄။ APK က Size လာမေးရင် (HEAD Request)
+    if (ctx.request.method === "HEAD") {
+      try {
+        // R2 ကို ဖိုင်ရှိမရှိနှင့် Size လှမ်းမေး
+        const headCommand = new HeadObjectCommand({
+          Bucket: bucketName,
+          Key: objectKey,
+        });
+        const headData = await r2.send(headCommand);
+
+        // APK ကို Size ပြန်ဖြေ (Redirect မလုပ်ပါ)
+        ctx.response.status = 200;
+        if (headData.ContentLength) {
+            ctx.response.headers.set("Content-Length", headData.ContentLength.toString());
+        }
+        if (headData.ContentType) {
+            ctx.response.headers.set("Content-Type", headData.ContentType);
+        }
+        ctx.response.headers.set("Accept-Ranges", "bytes"); // Resume download ရအောင်
+        return;
+
+      } catch (error) {
+        console.error("HEAD Error:", error);
+        ctx.response.status = 404; // ဖိုင်မရှိရင် 404 ပြ
+        return;
+      }
+    }
+
+    // ၅။ ဒေါင်းလုပ်ဆွဲရင် (GET Request) -> Link ထုတ်ပေးပြီး Redirect လုပ်
     const command = new GetObjectCommand({
       Bucket: bucketName,
-      Key: video,
-      ResponseContentDisposition: `attachment; filename="${cleanFileName}"`, // Download box တက်အောင်
+      Key: objectKey,
+      ResponseContentDisposition: `attachment; filename="${video.split('/').pop()}"`, // Force Download
     });
-    // ၄။ Signed URL ထုတ်ပေးခြင်း (၁ နာရီ ခံပါမည်)
-    const signedUrl = await getSignedUrl(client, command, { expiresIn: 10800 });
 
-    // ၅။ Redirect လုပ်ခြင်း (302 Found - APK များနှင့် အကိုက်ညီဆုံး)
+    const signedUrl = await getSignedUrl(r2, command, { expiresIn: LINK_DURATION });
+
+    // APK ကို Link ပေးလိုက်ပါ (302 Redirect)
     ctx.response.status = 302;
     ctx.response.headers.set("Location", signedUrl);
 
-    // APK တွေ File Size မြင်အောင် Content-Disposition ကို ဒီအဆင့်မှာလည်း ထည့်ပေးလိုက်မယ်
-    ctx.response.headers.set("Content-Disposition", `attachment; filename="${cleanFileName}"`);
-
   } catch (err) {
-    console.error(err);
+    console.error("Main Error:", err);
     ctx.response.status = 500;
-    ctx.response.body = "Server Error or File Not Found";
+    ctx.response.body = "Internal Server Error";
   }
-});
+}
 
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-console.log("Deno R2 Proxy is running...");
 await app.listen({ port: 8000 });
