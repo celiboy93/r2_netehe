@@ -29,7 +29,7 @@ router.get("/", async (ctx) => {
 
   try {
     const command = new GetObjectCommand({
-      Bucket: "my-bucket-name", // ဒီနေရာမှာ ကိုယ့် Bucket နာမည် အမှန်ထည့်ပါ
+      Bucket: "lugyicar", // ဒီနေရာမှာ ကိုယ့် Bucket နာမည် အမှန်ထည့်ပါ
       Key: videoName,
     });
 
